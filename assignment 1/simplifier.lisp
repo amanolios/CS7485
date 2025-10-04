@@ -38,6 +38,10 @@
 ;; Utilities
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defun cl-sym (name)
+  "Return a symbol interned in CL-USER package."
+  (intern (string name) :cl-user))
+
 (defun has-value-p (val lst)
   "Check if val is in lst, handling T/NIL specially."
   (cond ((eq val 't) (member 't lst))
@@ -70,22 +74,9 @@
 (defun make-neg (x)
   "Return the logical negation of x in normalized form:
    if x is (not Y) return Y, else return (not x)."
-  (if (and (consp x) (op-name= (car x) 'not)) (cadr x) (list 'not x)))
-
-(defun intern-in-cl (symbol)
-  "Intern a symbol in the CL package to avoid package prefixes in output."
-  (if (symbolp symbol)
-      (intern (symbol-name symbol) :cl)
-      symbol))
-
-(defun unintern-form (form)
-  "Recursively convert all symbols in form to CL package."
-  (cond
-    ((null form) nil)
-    ((symbolp form) (intern-in-cl form))
-    ((consp form) (cons (unintern-form (car form))
-                       (unintern-form (cdr form))))
-    (t form)))
+  (if (and (consp x) (op-name= (car x) 'not)) 
+      (cadr x) 
+      (list (cl-sym 'not) x)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Core simplification helpers (these implement the rules)
@@ -101,33 +92,33 @@
     ((false-p arg) 't)
     ;; De Morgan: not (and ...) => or (not ...) ; not (or ...) => and (not ...)
     ((and (consp arg) (op-name= (car arg) 'and))
-     (cons 'or (mapcar (lambda (x) (list 'not x)) (cdr arg))))
+     (cons (cl-sym 'or) (mapcar (lambda (x) (list (cl-sym 'not) x)) (cdr arg))))
     ((and (consp arg) (op-name= (car arg) 'or))
-     (cons 'and (mapcar (lambda (x) (list 'not x)) (cdr arg))))
-    ;; not (implies p q) => and p (not q)  (we choose P AND NOT Q ordering)
+     (cons (cl-sym 'and) (mapcar (lambda (x) (list (cl-sym 'not) x)) (cdr arg))))
+    ;; not (implies p q) => and p (not q)
     ((and (consp arg) (op-name= (car arg) 'implies))
      (let ((p (cadr arg)) (q (caddr arg)))
-       (list 'and p (list 'not q))))
+       (list (cl-sym 'and) p (list (cl-sym 'not) q))))
     ;; not (iff p q) where 2 args => xor p q
     ((and (consp arg) (op-name= (car arg) 'iff) (= (length (cdr arg)) 2))
-     (cons 'xor (cdr arg)))
+     (cons (cl-sym 'xor) (cdr arg)))
     ;; not (xor p q) => iff p q (for binary case)
     ((and (consp arg) (op-name= (car arg) 'xor) (= (length (cdr arg)) 2))
-     (cons 'iff (cdr arg)))
-    (t (list 'not arg))))
+     (cons (cl-sym 'iff) (cdr arg)))
+    (t (list (cl-sym 'not) arg))))
 
 (defun simplify-implies-once (p q)
   "Simplify implies where p and q are already simplified."
   (cond
-    ((true-p q) 't)                     ; p -> t = t
-    ((false-p p) 't)                    ; nil -> q = t
-    ((true-p p) q)                      ; t -> q = q
-    ((false-p q) (list 'not p))         ; p -> nil = not p
-    ((equal p q) 't)                    ; p -> p = t
-    ;; p -> (not p) = not p  (redundant but fine)
-    ((and (consp q) (op-name= (car q) 'not) (equal p (cadr q))) (list 'not p))
+    ((true-p q) 't)
+    ((false-p p) 't)
+    ((true-p p) q)
+    ((false-p q) (list (cl-sym 'not) p))
+    ((equal p q) 't)
+    ((and (consp q) (op-name= (car q) 'not) (equal p (cadr q))) 
+     (list (cl-sym 'not) p))
     ((and (consp p) (op-name= (car p) 'not) (equal (cadr p) q)) q)
-    (t (list 'implies p q))))
+    (t (list (cl-sym 'implies) p q))))
 
 (defun simplify-if-once (c tbr ebr)
   "Simplify ternary if with already-simplified branches."
@@ -136,8 +127,8 @@
     ((false-p c) ebr)
     ((equal tbr ebr) tbr)
     ((and (true-p tbr) (false-p ebr)) c)
-    ((and (false-p tbr) (true-p ebr)) (list 'not c))
-    (t (list 'if c tbr ebr))))
+    ((and (false-p tbr) (true-p ebr)) (list (cl-sym 'not) c))
+    (t (list (cl-sym 'if) c tbr ebr))))
 
 (defun apply-absorption (op args)
   "Simple absorption:
@@ -187,7 +178,6 @@
                     (when (and (op-name= op 'and) 
                                (op-name= (car a1) 'or))
                       (cond
-                        ;; P matches P, Q matches ¬Q2
                         ((and (equal p1 p2)
                               (or (and (consp q2) 
                                        (op-name= (car q2) 'not) 
@@ -196,7 +186,6 @@
                                        (op-name= (car q1) 'not) 
                                        (equal (cadr q1) q2))))
                          (setf common-term p1))
-                        ;; P matches Q2, Q matches ¬P2
                         ((and (equal p1 q2)
                               (or (and (consp p2) 
                                        (op-name= (car p2) 'not) 
@@ -205,7 +194,6 @@
                                        (op-name= (car q1) 'not) 
                                        (equal (cadr q1) p2))))
                          (setf common-term p1))
-                        ;; Q matches P2, P matches ¬Q2
                         ((and (equal q1 p2)
                               (or (and (consp q2) 
                                        (op-name= (car q2) 'not) 
@@ -214,7 +202,6 @@
                                        (op-name= (car p1) 'not) 
                                        (equal (cadr p1) q2))))
                          (setf common-term q1))
-                        ;; Q matches Q2, P matches ¬P2
                         ((and (equal q1 q2)
                               (or (and (consp p2) 
                                        (op-name= (car p2) 'not) 
@@ -234,7 +221,6 @@
                     (when (and (op-name= op 'or) 
                                (op-name= (car a1) 'and))
                       (cond
-                        ;; P matches P, Q matches ¬Q2
                         ((and (equal p1 p2)
                               (or (and (consp q2) 
                                        (op-name= (car q2) 'not) 
@@ -243,7 +229,6 @@
                                        (op-name= (car q1) 'not) 
                                        (equal (cadr q1) q2))))
                          (setf common-term p1))
-                        ;; P matches Q2, Q matches ¬P2
                         ((and (equal p1 q2)
                               (or (and (consp p2) 
                                        (op-name= (car p2) 'not) 
@@ -252,7 +237,6 @@
                                        (op-name= (car q1) 'not) 
                                        (equal (cadr q1) p2))))
                          (setf common-term p1))
-                        ;; Q matches P2, P matches ¬Q2
                         ((and (equal q1 p2)
                               (or (and (consp q2) 
                                        (op-name= (car q2) 'not) 
@@ -261,7 +245,6 @@
                                        (op-name= (car p1) 'not) 
                                        (equal (cadr p1) q2))))
                          (setf common-term q1))
-                        ;; Q matches Q2, P matches ¬P2
                         ((and (equal q1 q2)
                               (or (and (consp p2) 
                                        (op-name= (car p2) 'not) 
@@ -286,7 +269,7 @@
       (maphash (lambda (k v) (when (oddp v) (push k kept))) table)
       (cond ((null kept) 'nil)
             ((= (length kept) 1) (first kept))
-            (t (cons 'xor (canonicalize-ac-args kept)))))))
+            (t (cons (cl-sym 'xor) (canonicalize-ac-args kept)))))))
 
 (defun finalize-iff (args)
   "Final handling for IFF (mostly binary rules)."
@@ -298,7 +281,7 @@
               (and (consp (first args)) (op-name= (car (first args)) 'not)
                    (equal (cadr (first args)) (second args)))))
      'nil)
-    (t (cons 'iff (canonicalize-ac-args args)))))
+    (t (cons (cl-sym 'iff) (canonicalize-ac-args args)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; The main one-step simplifier (called repeatedly by simplify)
@@ -335,6 +318,7 @@
               (op-name= (car form) 'xor)
               (op-name= (car form) 'iff)))
      (let* ((op (car form))
+            (op-sym (cl-sym (symbol-name op)))
             ;; simplify child args
             (args (mapcar #'simplify-once (cdr form)))
             ;; flatten associative ops
@@ -359,7 +343,9 @@
        ;; complementary pairs (x and not x) or (x or not x)
        (when (or (op-name= op 'and) (op-name= op 'or))
          (dolist (a args)
-           (let ((neg-a (if (and (consp a) (op-name= (car a) 'not)) (cadr a) (list 'not a))))
+           (let ((neg-a (if (and (consp a) (op-name= (car a) 'not)) 
+                           (cadr a) 
+                           (list (cl-sym 'not) a))))
              (when (member neg-a args :test #'equal)
                (return-from simplify-once (if (op-name= op 'and) 'nil 't))))))
 
@@ -378,7 +364,7 @@
          ((op-name= op 'xor) (finalize-xor args))
          ((op-name= op 'iff) (finalize-iff args))
          (t ;; and / or default: canonicalize and return
-          (cons op (canonicalize-ac-args args))))))
+          (cons op-sym (canonicalize-ac-args args))))))
 
     ;; fallback: unknown operator - simplify arguments
     (t (cons (car form) (mapcar #'simplify-once (cdr form))))))
@@ -393,8 +379,7 @@
     (loop while (not (equal prev curr)) do
           (setf prev curr)
           (setf curr (simplify-once curr)))
-    ;; Convert all symbols to CL package to avoid package prefixes
-    (unintern-form curr)))
+    curr))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; I/O helpers and CLI
