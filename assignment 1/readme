@@ -8,3 +8,6 @@ another example of where I went to ChatGPT with higher level, core issues, so th
 I would take it back to Claude to fix things that would not work, and really get into what the logic actually was. This was very surprising to me, to be honest, since
 Claude claims to not be able to actually run the code its generating. I, of course, would feed it the resulting errors so that it could find where it was wrong, but it
 had a lot better strategies for debugging than ChatGPT. 
+
+To run the tests I created, run this command in terminal in the directory of simplifier:
+sbcl --load simplifier.lisp --load test-suite.lisp --quit
