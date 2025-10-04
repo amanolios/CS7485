@@ -1,0 +1,10 @@
+Throughout this assignment, I chose to use a mix of ChatGPT and Claude. I first started with ChatGPT, where I fed it small parts of the assignment so it could slowly
+work through the problem. I also at the beginning gave it all of the lecture notes supplied. Once it gave me back a reasonable answer with test cases it claimed to
+be passing, I moved to Claude. My general strategy throughout this assignment was to use both to fact-check one another. I gave the code ChatGPT wrote to Claude, 
+along with the rap document, and it immediately found some logic issues. I found throughout this process that I used ChatGPT for just generating code, and minor 
+debugging, but Claude was a lot better overall. I had a lot more exchanges with Claude in terms of finding syntax issues (which ChatGPT could not find!), fixing
+code logic, etc. I did discover that Claude was not reasoning about the logic correctly, so I needed to fix this as well, which took a lot of back and forth. This is
+another example of where I went to ChatGPT with higher level, core issues, so that it could generate new test cases for me and fix new code. To refine that code,
+I would take it back to Claude to fix things that would not work, and really get into what the logic actually was. This was very surprising to me, to be honest, since
+Claude claims to not be able to actually run the code its generating. I, of course, would feed it the resulting errors so that it could find where it was wrong, but it
+had a lot better strategies for debugging than ChatGPT. 
