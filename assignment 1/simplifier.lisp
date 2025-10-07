@@ -108,7 +108,8 @@
     (t (list (cl-sym 'not) arg))))
 
 (defun simplify-implies-once (p q)
-  "Simplify implies where p and q are already simplified."
+  "Simplify implies where p and q are already simplified.
+   Convert to OR form: p => q ≡ ¬p ∨ q"
   (cond
     ((true-p q) 't)
     ((false-p p) 't)
@@ -118,7 +119,8 @@
     ((and (consp q) (op-name= (car q) 'not) (equal p (cadr q))) 
      (list (cl-sym 'not) p))
     ((and (consp p) (op-name= (car p) 'not) (equal (cadr p) q)) q)
-    (t (list (cl-sym 'implies) p q))))
+    ;; Convert to OR form: p => q ≡ ¬p ∨ q
+    (t (list (cl-sym 'or) (make-neg p) q))))
 
 (defun simplify-if-once (c tbr ebr)
   "Simplify ternary if with already-simplified branches."
@@ -131,22 +133,123 @@
     (t (list (cl-sym 'if) c tbr ebr))))
 
 (defun apply-absorption (op args)
-  "Simple absorption:
+  "Enhanced absorption:
    and: remove (or ...) args that contain an element present at top-level
-   or: remove (and ...) args that contain an element present at top-level"
+        also handle p ∧ (¬p ∨ q) => p ∧ q
+   or: remove (and ...) args that contain an element present at top-level
+       also handle p ∨ (¬p ∧ q) => p ∨ q"
   (cond
     ((op-name= op 'and)
-     (remove-if
-      (lambda (arg)
-        (and (consp arg) (op-name= (car arg) 'or)
-             (some (lambda (x) (member x args :test #'equal)) (cdr arg))))
-      args))
+     (let ((result args))
+       ;; Standard absorption: p ∧ (p ∨ q) => p
+       (setf result
+             (remove-if
+              (lambda (arg)
+                (and (consp arg) (op-name= (car arg) 'or)
+                     (some (lambda (x) (member x args :test #'equal)) (cdr arg))))
+              result))
+       ;; Enhanced: p ∧ (¬p ∨ q) => p ∧ q
+       (let (modified)
+         (dolist (a result)
+           (if (and (consp a) (op-name= (car a) 'or))
+               (let ((or-args (cdr a))
+                     found-neg)
+                 ;; Check if any top-level arg has its negation in this OR
+                 (dolist (top result)
+                   (unless (equal top a)
+                     (let ((neg-top (make-neg top)))
+                       (when (member neg-top or-args :test #'equal)
+                         (setf or-args (remove neg-top or-args :test #'equal))
+                         (setf found-neg t)))))
+                 (if found-neg
+                     (cond ((null or-args) nil) ; skip empty
+                           ((= (length or-args) 1) (push (first or-args) modified))
+                           (t (push (cons (cl-sym 'or) or-args) modified)))
+                     (push a modified)))
+               (push a modified)))
+         (reverse modified))))
     ((op-name= op 'or)
-     (remove-if
-      (lambda (arg)
-        (and (consp arg) (op-name= (car arg) 'and)
-             (some (lambda (x) (member x args :test #'equal)) (cdr arg))))
-      args))
+     (let ((result args))
+       ;; Standard absorption: p ∨ (p ∧ q) => p
+       (setf result
+             (remove-if
+              (lambda (arg)
+                (and (consp arg) (op-name= (car arg) 'and)
+                     (some (lambda (x) (member x args :test #'equal)) (cdr arg))))
+              result))
+       ;; Enhanced: p ∨ (¬p ∧ q) => p ∨ q
+       (let (modified)
+         (dolist (a result)
+           (if (and (consp a) (op-name= (car a) 'and))
+               (let ((and-args (cdr a))
+                     found-neg)
+                 ;; Check if any top-level arg has its negation in this AND
+                 (dolist (top result)
+                   (unless (equal top a)
+                     (let ((neg-top (make-neg top)))
+                       (when (member neg-top and-args :test #'equal)
+                         (setf and-args (remove neg-top and-args :test #'equal))
+                         (setf found-neg t)))))
+                 (if found-neg
+                     (cond ((null and-args) nil) ; skip empty
+                           ((= (length and-args) 1) (push (first and-args) modified))
+                           (t (push (cons (cl-sym 'and) and-args) modified)))
+                     (push a modified)))
+               (push a modified)))
+         (reverse modified))))
+    (t args)))
+
+(defun apply-distributivity (op args)
+  "Apply distributivity rules:
+   AND: p ∧ (q ∨ r) => (p ∧ q) ∨ (p ∧ r)
+   OR: p ∨ (q ∧ r) => (p ∨ q) ∧ (p ∨ r)"
+  (cond
+    ((op-name= op 'and)
+     ;; Look for pattern: atom AND (OR ...)
+     (let ((atoms nil)
+           (or-terms nil))
+       (dolist (a args)
+         (if (and (consp a) (op-name= (car a) 'or))
+             (push a or-terms)
+             (push a atoms)))
+       (if (and atoms or-terms)
+           ;; Apply distributivity: distribute atoms over OR terms
+           (let ((distributed nil))
+             (dolist (or-term or-terms)
+               (let ((or-args (cdr or-term)))
+                 (push (cons (cl-sym 'or)
+                            (mapcar (lambda (or-arg)
+                                      (cons (cl-sym 'and)
+                                            (append atoms (list or-arg))))
+                                    or-args))
+                       distributed)))
+             (if (= (length distributed) 1)
+                 (first distributed)
+                 (cons (cl-sym 'and) (append atoms distributed))))
+           args)))
+    ((op-name= op 'or)
+     ;; Look for pattern: atom OR (AND ...)
+     (let ((atoms nil)
+           (and-terms nil))
+       (dolist (a args)
+         (if (and (consp a) (op-name= (car a) 'and))
+             (push a and-terms)
+             (push a atoms)))
+       (if (and atoms and-terms)
+           ;; Apply distributivity: distribute atoms over AND terms
+           (let ((distributed nil))
+             (dolist (and-term and-terms)
+               (let ((and-args (cdr and-term)))
+                 (push (cons (cl-sym 'and)
+                            (mapcar (lambda (and-arg)
+                                      (cons (cl-sym 'or)
+                                            (append atoms (list and-arg))))
+                                    and-args))
+                       distributed)))
+             (if (= (length distributed) 1)
+                 (first distributed)
+                 (cons (cl-sym 'or) (append atoms distributed))))
+           args)))
     (t args)))
 
 (defun apply-redundancy (op args)
@@ -263,6 +366,23 @@
 
 (defun finalize-xor (args)
   "Given simplified XOR args (flattened), apply parity cancellation and return an appropriate form."
+  ;; Check for constants first
+  (let ((has-true (member 't args :test #'eq))
+        (non-const (remove-if (lambda (x) (or (eq x 't) (eq x 'nil))) args)))
+    (when has-true
+      ;; XOR with T: flip the result of the rest
+      (let ((rest-result (if (null non-const)
+                            'nil
+                            (finalize-xor non-const))))
+        (return-from finalize-xor
+          (if (eq rest-result 'nil)
+              't
+              (if (eq rest-result 't)
+                  'nil
+                  (make-neg rest-result))))))
+    ;; No T, continue with parity cancellation
+    (setf args non-const))
+  
   (let ((table (make-hash-table :test 'equal)))
     (dolist (a args) (incf (gethash a table 0)))
     (let (kept)
@@ -281,6 +401,11 @@
               (and (consp (first args)) (op-name= (car (first args)) 'not)
                    (equal (cadr (first args)) (second args)))))
      'nil)
+    ;; IFF with NIL: (p ≡ false) ≡ ¬p
+    ((and (= (length args) 2) (eq (first args) 'nil))
+     (make-neg (second args)))
+    ((and (= (length args) 2) (eq (second args) 'nil))
+     (make-neg (first args)))
     (t (cons (cl-sym 'iff) (canonicalize-ac-args args)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -348,6 +473,15 @@
                            (list (cl-sym 'not) a))))
              (when (member neg-a args :test #'equal)
                (return-from simplify-once (if (op-name= op 'and) 'nil 't))))))
+       
+       ;; XOR: check for p XOR ¬p before finalization (always true)
+       (when (op-name= op 'xor)
+         (dolist (a args)
+           (let ((neg-a (if (and (consp a) (op-name= (car a) 'not))
+                           (cadr a)
+                           (list (cl-sym 'not) a))))
+             (when (member neg-a args :test #'equal)
+               (return-from simplify-once 't)))))
 
        ;; absorption
        (when (or (op-name= op 'and) (op-name= op 'or))
@@ -357,7 +491,32 @@
          ;; redundancy patterns
          (setf args (apply-redundancy op args))
          (when (= (length args) 1) (return-from simplify-once (first args)))
-         (when (null args) (return-from simplify-once ident)))
+         (when (null args) (return-from simplify-once ident))
+         
+         ;; Case analysis: (p => q) ∧ (¬p => q) => q
+         (when (op-name= op 'and)
+           (let ((implies-terms (remove-if-not 
+                                 (lambda (a) (and (consp a) (op-name= (car a) 'or))) 
+                                 args)))
+             (when (>= (length implies-terms) 2)
+               (loop for i from 0 below (length implies-terms) do
+                 (loop for j from (1+ i) below (length implies-terms) do
+                   (let ((t1 (nth i implies-terms))
+                         (t2 (nth j implies-terms)))
+                     ;; Check for (¬p ∨ q) ∧ (p ∨ q) => q (which is p=>q ∧ ¬p=>q)
+                     (when (and (= (length (cdr t1)) 2) (= (length (cdr t2)) 2))
+                       (let ((a1 (second t1)) (b1 (third t1))
+                             (a2 (second t2)) (b2 (third t2)))
+                         ;; Check if b1 = b2 and a1 = ¬a2 or a2 = ¬a1
+                         (when (equal b1 b2)
+                           (when (or (equal a1 (make-neg a2))
+                                    (equal a2 (make-neg a1)))
+                             (return-from simplify-once b1)))))))))))
+         
+         ;; distributivity
+         (let ((dist-result (apply-distributivity op args)))
+           (unless (equal dist-result args)
+             (return-from simplify-once dist-result))))
 
        ;; finalize per operator
        (cond
@@ -414,4 +573,5 @@
                             :executable t
                             :compression t))
 
-(format t "~%Clean simplifier loaded (package :simplifier).~%")
+(format t "~%Enhanced simplifier loaded (package :simplifier).~%")
+(format t "Updates: XOR/IFF constants, IMPLIES->OR, distributivity, enhanced absorption, case analysis~%")
